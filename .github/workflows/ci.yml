@@ -1,0 +1,55 @@
+name: SwiftPay CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [service-a-gateway, service-b-ledger]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
+
+      - name: Compile
+        working-directory: ${{ matrix.service }}
+        run: mvn -B -ntp compile
+
+      - name: Run unit + integration tests
+        working-directory: ${{ matrix.service }}
+        # Integration tests use Testcontainers, which needs Docker — available by
+        # default on GitHub-hosted ubuntu-latest runners.
+        run: mvn -B -ntp verify
+
+      - name: Publish test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.service }}
+          path: ${{ matrix.service }}/target/surefire-reports/
+
+  docker-build:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [service-a-gateway, service-b-ledger]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        working-directory: ${{ matrix.service }}
+        run: docker build -t swiftpay/${{ matrix.service }}:${{ github.sha }} .
