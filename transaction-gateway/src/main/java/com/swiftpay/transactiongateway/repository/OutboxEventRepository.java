@@ -1,0 +1,29 @@
+package com.swiftpay.transactiongateway.repository;
+
+import com.swiftpay.transactiongateway.domain.entities.OutboxEvent;
+import com.swiftpay.transactiongateway.domain.enums.OutboxStatus;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+@Repository
+public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> {
+
+    @Query("""
+        SELECT e
+        FROM OutboxEvent e
+        WHERE e.status = :status
+          AND e.availableAt <= :availableAt
+        ORDER BY e.createdAt ASC
+        """)
+    List<OutboxEvent> findAvailableEvents(
+            @Param("status") OutboxStatus status,
+            @Param("availableAt") Instant availableAt,
+            Pageable pageable);
+}

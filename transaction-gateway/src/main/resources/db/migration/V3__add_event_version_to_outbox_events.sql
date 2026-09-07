@@ -1,0 +1,1 @@
+ALTER TABLE transaction_gateway.outbox_events ADD COLUMN event_version BIGINT NOT NULL DEFAULT 1;

@@ -1,0 +1,60 @@
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  application:
+    name: ledger-service
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/swiftpay_ledger}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:root}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:ledger-service}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+
+    properties:
+      spring.json.trusted.packages: com.swiftpay.ledger.domain.event
+      spring.json.value.default.type: com.swiftpay.ledger.domain.event.PaymentInitiatedEvent
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+
+swiftpay:
+  app:
+    name: ${spring.application.name}
+    version: 0.1.0-SNAPSHOT
+    environment: ${SPRING_PROFILES_ACTIVE:local}

@@ -1,82 +1,63 @@
-# SwiftPay — Real-Time Payment Ledger
+﻿# SwiftPay – Real-Time Payment Ledger
 
-A resilient, event-driven P2P payment platform built for the SwiftPay hackathon
-challenge. See [`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture reasoning
-(double-entry ledger, transactional outbox, idempotency, partitioning strategy, etc.)
-and [`docs/PROCESS.md`](docs/PROCESS.md) for the AI-assisted development log.
+This repository contains the initial production-oriented project scaffold for the SwiftPay platform.
 
-## Architecture
+## Modules
 
-```
-                 ┌─────────────────────┐         ┌──────────────────────┐
-   Client ──────▶│  Service A: Gateway │         │  Service B: Ledger   │
-                  │  POST /v1/payments  │         │  Kafka consumer      │
-                  │  Redis idempotency   │         │  Double-entry debit/ │
-                  │  Postgres (PENDING)  │         │  credit, atomic tx   │
-                  │  Outbox → Kafka       │──────▶ │  GET tx history      │
-                  └─────────────────────┘ Kafka:  └──────────────────────┘
-                                          payment-initiated
-                                          payment-completed
-                                          payment-failed
-```
-
-- **Service A (Transaction Gateway)** — accepts payment requests, validates against a
-  cached (non-authoritative) balance, persists PENDING + an outbox event atomically,
-  relays the outbox to Kafka.
-- **Service B (Ledger Service)** — consumes `PaymentInitiated`, performs the
-  authoritative balance check and double-entry transfer inside one DB transaction,
-  emits `PaymentCompleted`/`PaymentFailed`, exposes transaction history.
-- **Service C (Analytics)** — out of scope for this submission; see DESIGN.md §11 for
-  the reasoning and how it would be approached with more time.
+- transaction-gateway — ingress API layer and external request handling
+- ledger-service — authoritative ledger and transactional accounting service
+- analytics-worker — event-driven analytics and reporting worker
 
 ## Stack
 
-Java 21, Spring Boot 3.3, PostgreSQL 16, Apache Kafka, Redis, Flyway, Testcontainers,
-Docker Compose, GitHub Actions.
+- Java 21
+- Spring Boot 3.3.x
+- Maven
+- PostgreSQL
+- Flyway
+- Apache Kafka
+- Redis
+- OpenAPI/Swagger
+- JUnit 5
+- Mockito
+- Testcontainers
+- Docker
+- Kubernetes
+- GitHub Actions
 
-## Running Locally
+## Project structure
+
+```text
+.
+├── analytics-worker/
+├── docs/
+├── k8s/
+├── ledger-service/
+├── performance/
+├── transaction-gateway/
+├── .github/
+├── pom.xml
+├── docker-compose.yml
+├── README.md
+└── .gitignore
+```
+
+## Scaffold state
+
+The current stage focuses on project structure, dependency hygiene, Spring Boot application initialization, and compile-ready service skeletons.
+
+Business functionality, Kafka consumers, payment processing, Redis logic, and database schema implementation are intentionally deferred until the foundational architecture is validated.
+
+## Build
 
 ```bash
-docker compose up --build
+mvn test
 ```
 
-This brings up Postgres (with separate `swiftpay_gateway` / `swiftpay_ledger`
-databases), Kafka + Zookeeper, Redis, and both services.
-
-- Service A: http://localhost:8081 — Swagger UI at `/swagger-ui.html`
-- Service B: http://localhost:8082 — Swagger UI at `/swagger-ui.html`
-- Health checks: `GET /actuator/health` on each service
-
-## Running Tests
+or, per service:
 
 ```bash
-cd service-a-gateway && mvn verify
-cd service-b-ledger && mvn verify
+mvn -f transaction-gateway/pom.xml test
+mvn -f ledger-service/pom.xml test
+mvn -f analytics-worker/pom.xml test
 ```
-
-Integration tests use Testcontainers (real Postgres + Kafka in Docker), not mocks,
-for the persistence and messaging layers.
-
-## Project Layout
-
-```
-service-a-gateway/   Transaction Gateway (REST API + outbox)
-service-b-ledger/    Ledger Service (Kafka consumer + double-entry ledger)
-docs/DESIGN.md        Architecture decisions and reasoning
-docs/PROCESS.md        AI-assisted development log
-infra/                 Supporting infra scripts (multi-DB Postgres init)
-.github/workflows/     CI: build, test, Docker image build
-```
-
-## What's Deliberately Out of Scope
-
-See `docs/DESIGN.md` §11 for the full list and reasoning — in short: Service C
-(ClickHouse analytics), the full 250 TPS / 1M-transaction PCAP load test, and
-production-hardened K8s manifests (HPA/NetworkPolicy) were deprioritized in favor of
-getting the core payment flow (Services A + B) correct, tested, and well-reasoned
-within the submission timeline. A smaller-scale k6 load test is included instead.
-
-## Status
-
-🚧 Work in progress — architecture and scaffolding complete, core payment flow
-implementation in progress. This README is updated as the build progresses.

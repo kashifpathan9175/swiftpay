@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [service-a-gateway, service-b-ledger]
+        service: [transaction-gateway, ledger-service, analytics-worker]
 
     steps:
       - uses: actions/checkout@v4
@@ -25,13 +25,11 @@ jobs:
 
       - name: Compile
         working-directory: ${{ matrix.service }}
-        run: mvn -B -ntp compile
+        run: mvn -B -ntp -DskipTests compile
 
-      - name: Run unit + integration tests
+      - name: Run tests
         working-directory: ${{ matrix.service }}
-        # Integration tests use Testcontainers, which needs Docker — available by
-        # default on GitHub-hosted ubuntu-latest runners.
-        run: mvn -B -ntp verify
+        run: mvn -B -ntp test
 
       - name: Publish test reports
         if: always()
@@ -45,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [service-a-gateway, service-b-ledger]
+        service: [transaction-gateway, ledger-service, analytics-worker]
 
     steps:
       - uses: actions/checkout@v4

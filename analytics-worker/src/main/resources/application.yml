@@ -1,0 +1,35 @@
+server:
+  port: ${SERVER_PORT:8083}
+
+spring:
+  application:
+    name: analytics-worker
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+
+swiftpay:
+  app:
+    name: ${spring.application.name}
+    version: 0.1.0-SNAPSHOT
+    environment: ${SPRING_PROFILES_ACTIVE:local}
