@@ -60,9 +60,15 @@ public record PaymentInitiatedEvent(
             String value,
             String fieldName
     ) {
-        if (value == null || value.isBlank()) {
+        if (value == null) {
             throw new IllegalArgumentException(
-                    fieldName + " must not be blank"
+                    fieldName + " must not be null or blank"
+            );
+        }
+
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(
+                    fieldName + " must not be null or blank"
             );
         }
 
@@ -73,7 +79,13 @@ public record PaymentInitiatedEvent(
             Long value,
             String fieldName
     ) {
-        if (value == null || value <= 0) {
+        if (value == null) {
+            throw new NullPointerException(
+                    fieldName + " must not be null"
+            );
+        }
+
+        if (value <= 0) {
             throw new IllegalArgumentException(
                     fieldName + " must be greater than zero"
             );

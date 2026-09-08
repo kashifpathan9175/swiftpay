@@ -1,6 +1,22 @@
 server:
   port: ${SERVER_PORT:8083}
 
+spring:
+  datasource:
+    url: ${ANALYTICS_DB_URL:jdbc:postgresql://postgres:5432/swiftpay_analytics}
+    username: ${ANALYTICS_DB_USERNAME:postgres}
+    password: ${ANALYTICS_DB_PASSWORD:root}
+    driver-class-name: ${ANALYTICS_DB_DRIVER_CLASS_NAME:org.postgresql.Driver}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP_ID:analytics-worker-group}
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
 logging:
   level:
     root: INFO

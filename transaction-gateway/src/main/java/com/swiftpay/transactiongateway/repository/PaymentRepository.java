@@ -22,6 +22,12 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             Pageable pageable
     );
 
+    Page<Payment> findBySenderIdOrReceiverIdOrderByCreatedAtDesc(
+            Long senderId,
+            Long receiverId,
+            Pageable pageable
+    );
+
     Page<Payment> findBySenderIdAndStatus(
             Long senderId,
             PaymentStatus status,

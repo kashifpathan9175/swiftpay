@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-worker
+  namespace: swiftpay
+  labels:
+    app: analytics-worker
+    app.kubernetes.io/name: swiftpay
+    app.kubernetes.io/part-of: payment-ledger
+spec:
+  type: ClusterIP
+  selector:
+    app: analytics-worker
+  ports:
+    - name: http
+      port: 8083
+      targetPort: 8083

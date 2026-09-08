@@ -157,24 +157,58 @@ public class Payment {
     }
 
     public void markProcessing() {
-        ensureStatusCanChange();
+        if (status == PaymentStatus.COMPLETED
+                || status == PaymentStatus.FAILED
+                || status == PaymentStatus.CANCELLED) {
+            throw new IllegalStateException(
+                    "Cannot move a terminal payment to PROCESSING"
+            );
+        }
+
         this.status = PaymentStatus.PROCESSING;
         this.failureReason = null;
     }
 
     public void markCompleted() {
-        ensureStatusCanChange();
+        if (status == PaymentStatus.COMPLETED) {
+            return;
+        }
+
+        if (status == PaymentStatus.FAILED
+                || status == PaymentStatus.CANCELLED) {
+            throw new IllegalStateException(
+                    "Cannot complete a payment that is already " + status
+            );
+        }
+
+        if (status != PaymentStatus.PROCESSING) {
+            this.status = PaymentStatus.PROCESSING;
+        }
+
         this.status = PaymentStatus.COMPLETED;
         this.failureReason = null;
     }
 
     public void markFailed(String reason) {
-        ensureStatusCanChange();
+        if (status == PaymentStatus.FAILED) {
+            return;
+        }
+
+        if (status == PaymentStatus.COMPLETED
+                || status == PaymentStatus.CANCELLED) {
+            throw new IllegalStateException(
+                    "Cannot fail a payment that is already " + status
+            );
+        }
 
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException(
                     "failure reason must not be blank"
             );
+        }
+
+        if (status != PaymentStatus.PROCESSING) {
+            this.status = PaymentStatus.PROCESSING;
         }
 
         this.status = PaymentStatus.FAILED;
@@ -187,6 +221,11 @@ public class Payment {
         if (status == PaymentStatus.COMPLETED) {
             throw new IllegalStateException(
                     "Completed payment cannot transition to another state"
+            );
+        }
+        if (status == PaymentStatus.FAILED) {
+            throw new IllegalStateException(
+                    "Failed payment cannot transition to another state"
             );
         }
     }
@@ -252,6 +291,7 @@ public class Payment {
 
         return normalized;
     }
+
 
     public Long getId() {
         return id;

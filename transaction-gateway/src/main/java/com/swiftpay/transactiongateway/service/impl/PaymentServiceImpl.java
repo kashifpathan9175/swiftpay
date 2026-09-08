@@ -15,13 +15,23 @@ import com.swiftpay.transactiongateway.repository.PaymentRepository;
 import com.swiftpay.transactiongateway.service.PaymentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -40,17 +50,23 @@ public class PaymentServiceImpl implements PaymentService {
     private final OutboxEventRepository outboxEventRepository;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate;
+
+    @Value("${swiftpay.ledger.base-url:http://localhost:8082}")
+    private String ledgerBaseUrl;
 
     public PaymentServiceImpl(
             PaymentRepository paymentRepository,
             OutboxEventRepository outboxEventRepository,
             StringRedisTemplate redisTemplate,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            RestTemplate restTemplate
     ) {
         this.paymentRepository = paymentRepository;
         this.outboxEventRepository = outboxEventRepository;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.restTemplate = restTemplate;
     }
 
     @Transactional
@@ -60,33 +76,8 @@ public class PaymentServiceImpl implements PaymentService {
     ) {
         validateRequest(request);
 
-        String transactionId = "TXN-" + UUID.randomUUID();
-
-        log.info(
-                "Payment initiation received transactionId={}, senderId={}, receiverId={}, amount={}, currency={}",
-                transactionId,
-                request.senderId(),
-                request.receiverId(),
-                request.amount(),
-                request.currency()
-        );
-
-        Payment existing =
-                paymentRepository.findByTransactionId(transactionId)
-                        .orElse(null);
-
-        if (existing != null) {
-            log.info(
-                    "Returning existing payment for transactionId={}, status={}",
-                    transactionId,
-                    existing.getStatus()
-            );
-
-            return PaymentResponse.from(existing);
-        }
-
-        String redisKey =
-                IDEMPOTENCY_PREFIX + transactionId;
+        String idempotencyKey = request.idempotencyKey().trim();
+        String redisKey = IDEMPOTENCY_PREFIX + idempotencyKey;
 
         Boolean acquired = redisTemplate.opsForValue().setIfAbsent(
                 redisKey,
@@ -95,19 +86,24 @@ public class PaymentServiceImpl implements PaymentService {
         );
 
         if (Boolean.FALSE.equals(acquired)) {
-            Payment alreadyPersisted =
-                    paymentRepository
-                            .findByTransactionId(transactionId)
-                            .orElse(null);
-
-            if (alreadyPersisted != null) {
-                return PaymentResponse.from(alreadyPersisted);
-            }
-
             throw new DuplicatePaymentException(
-                    "Payment request is already being processed"
+                    "Duplicate payment request for idempotency_key=" + idempotencyKey
             );
         }
+
+        validateSenderBalance(request.senderId(), request.amount());
+
+        String transactionId = "TXN-" + UUID.randomUUID();
+
+        log.info(
+                "Payment initiation received idempotencyKey={}, transactionId={}, senderId={}, receiverId={}, amount={}, currency={}",
+                idempotencyKey,
+                transactionId,
+                request.senderId(),
+                request.receiverId(),
+                request.amount(),
+                request.currency()
+        );
 
         try {
             Payment payment = Payment.pending(
@@ -181,7 +177,8 @@ public class PaymentServiceImpl implements PaymentService {
             redisTemplate.delete(redisKey);
 
             log.error(
-                    "Payment creation failed transactionId={}",
+                    "Payment creation failed idempotencyKey={}, transactionId={}",
+                    idempotencyKey,
                     transactionId,
                     ex
             );
@@ -189,6 +186,8 @@ public class PaymentServiceImpl implements PaymentService {
             throw ex;
         }
     }
+
+
 
     @Transactional(readOnly = true)
     @Override
@@ -213,12 +212,220 @@ public class PaymentServiceImpl implements PaymentService {
         return PaymentResponse.from(payment);
     }
 
+    @Transactional(readOnly = true)
+    @Override
+    public Page<PaymentResponse> getUserTransactions(
+            Long userId,
+            Pageable pageable
+    ) {
+        if (userId == null || userId <= 0) {
+            throw new InvalidPaymentException(
+                    "userId must be greater than zero"
+            );
+        }
+
+        if (pageable == null) {
+            throw new InvalidPaymentException(
+                    "pageable must not be null"
+            );
+        }
+
+        return paymentRepository
+                .findBySenderIdOrReceiverIdOrderByCreatedAtDesc(
+                        userId,
+                        userId,
+                        pageable
+                )
+                .map(PaymentResponse::from);
+    }
+
+    private void validateSenderBalance(
+            Long senderId,
+            BigDecimal requestedAmount
+    ) {
+        if (senderId == null) {
+            throw new InvalidPaymentException(
+                    "sender_id is required"
+            );
+        }
+
+        String balanceUrl = ledgerBaseUrl + "/api/accounts/" + senderId + "/balance";
+
+        try {
+            ResponseEntity<Map> response =
+                    restTemplate.getForEntity(balanceUrl, Map.class);
+
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                throw new InvalidPaymentException(
+                        "Unable to validate sender balance"
+                );
+            }
+
+            Object balanceValue = response.getBody().get("balance");
+            if (balanceValue == null) {
+                throw new InvalidPaymentException(
+                        "Sender balance not available"
+                );
+            }
+
+            BigDecimal currentBalance = new BigDecimal(balanceValue.toString());
+            if (currentBalance.compareTo(requestedAmount) < 0) {
+                throw new InvalidPaymentException(
+                        "Insufficient sender balance"
+                );
+            }
+
+            log.info(
+                    "Sender balance validated. senderId={}, requestedAmount={}, availableBalance={}",
+                    senderId,
+                    requestedAmount,
+                    currentBalance
+            );
+
+        } catch (HttpClientErrorException | HttpServerErrorException ex) {
+            if (ex.getStatusCode().value() == 404) {
+                throw new InvalidPaymentException(
+                        "Sender account not found"
+                );
+            }
+            if (ex.getStatusCode().value() == 422) {
+                throw new InvalidPaymentException(
+                        "Failed to validate sender balance"
+                );
+            }
+            throw new InvalidPaymentException(
+                    "Unable to validate sender balance"
+            );
+        } catch (RestClientException ex) {
+            log.warn(
+                    "Ledger balance lookup failed. senderId={}, ledgerBaseUrl={}",
+                    senderId,
+                    ledgerBaseUrl,
+                    ex
+            );
+            throw new InvalidPaymentException(
+                    "Unable to validate sender balance"
+            );
+        }
+    }
+
+    @Transactional
+    @Override
+    public void markFailed(
+            String transactionId,
+            String reason
+    ) {
+
+        Payment payment =
+                paymentRepository
+                        .findByTransactionId(transactionId)
+                        .orElseThrow(() ->
+                                new InvalidPaymentException(
+                                        "Payment not found"
+                                )
+                        );
+
+        if (payment.getStatus() == com.swiftpay.transactiongateway.domain.enums.PaymentStatus.FAILED) {
+            log.info(
+                    "Duplicate payment failure event ignored. transactionId={}, reason={}",
+                    transactionId,
+                    reason
+            );
+            return;
+        }
+
+        if (payment.getStatus() == com.swiftpay.transactiongateway.domain.enums.PaymentStatus.COMPLETED) {
+            log.warn(
+                    "Ignoring conflicting payment failure event for completed payment. transactionId={}, currentStatus={}, reason={}",
+                    transactionId,
+                    payment.getStatus(),
+                    reason
+            );
+            return;
+        }
+
+        if (payment.getStatus() == com.swiftpay.transactiongateway.domain.enums.PaymentStatus.CANCELLED) {
+            throw new InvalidPaymentException(
+                    "Cannot fail a cancelled payment. transactionId=" + transactionId
+            );
+        }
+
+        if (payment.getStatus() != com.swiftpay.transactiongateway.domain.enums.PaymentStatus.PROCESSING) {
+            payment.markProcessing();
+        }
+
+        payment.markFailed(reason);
+
+        log.info(
+                "Payment marked as FAILED. transactionId={}, reason={}",
+                transactionId,
+                reason
+        );
+    }
+
+    @Transactional
+    @Override
+    public void markCompleted(
+            String transactionId
+    ) {
+
+        Payment payment =
+                paymentRepository
+                        .findByTransactionId(transactionId)
+                        .orElseThrow(() ->
+                                new InvalidPaymentException(
+                                        "Payment not found"
+                                )
+                        );
+
+        if (payment.getStatus() == com.swiftpay.transactiongateway.domain.enums.PaymentStatus.COMPLETED) {
+            log.info(
+                    "Duplicate payment completion event ignored. transactionId={}",
+                    transactionId
+            );
+            return;
+        }
+
+        if (payment.getStatus() == com.swiftpay.transactiongateway.domain.enums.PaymentStatus.FAILED) {
+            log.warn(
+                    "Ignoring conflicting completion event for failed payment. transactionId={}, currentStatus={}",
+                    transactionId,
+                    payment.getStatus()
+            );
+            return;
+        }
+
+        if (payment.getStatus() == com.swiftpay.transactiongateway.domain.enums.PaymentStatus.CANCELLED) {
+            throw new InvalidPaymentException(
+                    "Cannot complete a cancelled payment. transactionId=" + transactionId
+            );
+        }
+
+        if (payment.getStatus() != com.swiftpay.transactiongateway.domain.enums.PaymentStatus.PROCESSING) {
+            payment.markProcessing();
+        }
+
+        payment.markCompleted();
+
+        log.info(
+                "Payment marked as COMPLETED. transactionId={}",
+                transactionId
+        );
+    }
+
     private void validateRequest(
             PaymentRequest request
     ) {
         if (request == null) {
             throw new InvalidPaymentException(
                     "Payment request must not be null"
+            );
+        }
+
+        if (request.idempotencyKey() == null ||
+                request.idempotencyKey().isBlank()) {
+            throw new InvalidPaymentException(
+                    "idempotency_key must not be blank"
             );
         }
 

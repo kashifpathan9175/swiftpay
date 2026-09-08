@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/swift-pay_txn_gateway}
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/swift_pay_txn_gateway}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:root}
     driver-class-name: org.postgresql.Driver
@@ -12,6 +12,9 @@ spring:
       connect-timeout: 2s
       timeout: 2s
 
+swiftpay:
+  ledger:
+    base-url: ${LEDGER_SERVICE_URL:http://localhost:8082}
 
 logging:
   level:

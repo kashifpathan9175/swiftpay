@@ -3,10 +3,14 @@ server:
 
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://postgres:5432/swift-pay_txn_gateway}
+    url: ${DB_URL:jdbc:postgresql://postgres:5432/swift_pay_txn_gateway}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:root}
     driver-class-name: org.postgresql.Driver
+
+swiftpay:
+  ledger:
+    base-url: ${LEDGER_SERVICE_URL:http://ledger-service:8082}
 
 logging:
   level:

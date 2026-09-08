@@ -4,33 +4,19 @@ server:
 spring:
   application:
     name: transaction-gateway
+
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
-  flyway:
-    enabled: true
-    locations: classpath:db/migration
 
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/swift-pay_txn_gateway}
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/swift_pay_txn_gateway}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:root}
     driver-class-name: org.postgresql.Driver
 
-  # Kafka configuration for transaction-gateway service
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
-
-      acks: all
-      enable-idempotence: true
-      retries: 10
-      properties:
-        max.in.flight.requests.per.connection: 5
-
-
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
 
   jpa:
     hibernate:
@@ -42,16 +28,23 @@ spring:
         jdbc:
           time_zone: UTC
 
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:transaction-gateway}
+
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+
   endpoint:
     health:
       show-details: never
       probes:
         enabled: true
+
   info:
     env:
       enabled: true
@@ -62,9 +55,12 @@ swiftpay:
     version: 0.1.0-SNAPSHOT
     environment: ${SPRING_PROFILES_ACTIVE:local}
 
+  ledger:
+    base-url: ${LEDGER_SERVICE_URL:http://localhost:8082}
+
   kafka:
     partitions: ${KAFKA_PARTITIONS:6}
     replicas: ${KAFKA_REPLICAS:1}
 
-    outbox:
-      poll-delay-ms: ${OUTBOX_POLL_DELAY_MS:1000}
+  outbox:
+    poll-delay-ms: ${OUTBOX_POLL_DELAY_MS:1000}

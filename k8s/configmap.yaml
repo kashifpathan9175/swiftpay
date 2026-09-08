@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swiftpay-app-config
+  namespace: swiftpay
+  labels:
+    app.kubernetes.io/name: swiftpay
+    app.kubernetes.io/part-of: payment-ledger
+data:
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  KAFKA_PARTITIONS: "6"
+  KAFKA_REPLICAS: "1"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  TXN_DB_NAME: "swift_pay_txn_gateway"
+  LEDGER_DB_NAME: "swiftpay_ledger"
+  ANALYTICS_DB_NAME: "swiftpay_analytics"
+  LEDGER_SERVICE_URL: "http://ledger-service:8082"

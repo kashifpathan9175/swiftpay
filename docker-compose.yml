@@ -1,25 +1,22 @@
-version: "3.9"
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18
     container_name: swiftpay-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: root
-      POSTGRES_MULTIPLE_DATABASES: swift-pay_txn_gateway,swiftpay_ledger
+      POSTGRES_MULTIPLE_DATABASES: swift_pay_txn_gateway,swiftpay_ledger,swiftpay_analytics
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
       - ./infra/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
       timeout: 5s
-      retries: 10
-
-
+      retries: 20
 
   redis:
     image: redis:7-alpine
@@ -43,7 +40,8 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     container_name: swiftpay-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_started
     ports:
       - "9092:9092"
     environment:
@@ -59,7 +57,7 @@ services:
       test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
       interval: 10s
       timeout: 10s
-      retries: 10
+      retries: 20
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -74,7 +72,9 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
   transaction-gateway:
-    build: ./transaction-gateway
+    build:
+      context: .
+      dockerfile: transaction-gateway/Dockerfile
     container_name: swiftpay-transaction-gateway
     depends_on:
       postgres:
@@ -86,19 +86,21 @@ services:
     environment:
       SERVER_PORT: 8081
       SPRING_PROFILES_ACTIVE: docker
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: swift-pay_txn_gateway
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: root
+      DB_URL: jdbc:postgresql://postgres:5432/swift_pay_txn_gateway
+      DB_USERNAME: postgres
+      DB_PASSWORD: root
       REDIS_HOST: redis
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: transaction-gateway
+      LEDGER_SERVICE_URL: http://ledger-service:8082
     ports:
       - "8081:8081"
 
   ledger-service:
-    build: ./ledger-service
+    build:
+      context: .
+      dockerfile: ledger-service/Dockerfile
     container_name: swiftpay-ledger-service
     depends_on:
       postgres:
@@ -108,19 +110,22 @@ services:
     environment:
       SERVER_PORT: 8082
       SPRING_PROFILES_ACTIVE: docker
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: swiftpay_ledger
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: root
+      DB_URL: jdbc:postgresql://postgres:5432/swiftpay_ledger
+      DB_USERNAME: postgres
+      DB_PASSWORD: root
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: ledger-service
     ports:
       - "8082:8082"
 
   analytics-worker:
-    build: ./analytics-worker
+    build:
+      context: .
+      dockerfile: analytics-worker/Dockerfile
     container_name: swiftpay-analytics-worker
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
@@ -128,9 +133,14 @@ services:
     environment:
       SERVER_PORT: 8083
       SPRING_PROFILES_ACTIVE: docker
+      ANALYTICS_DB_URL: jdbc:postgresql://postgres:5432/swiftpay_analytics
+      ANALYTICS_DB_USERNAME: postgres
+      ANALYTICS_DB_PASSWORD: root
+      ANALYTICS_DB_DRIVER_CLASS_NAME: org.postgresql.Driver
       REDIS_HOST: redis
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CONSUMER_GROUP_ID: analytics-worker-group
     ports:
       - "8083:8083"
 

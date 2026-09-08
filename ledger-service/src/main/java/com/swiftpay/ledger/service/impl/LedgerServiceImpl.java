@@ -3,21 +3,29 @@ package com.swiftpay.ledger.service.impl;
 import com.swiftpay.ledger.domain.entity.Account;
 import com.swiftpay.ledger.domain.entity.LedgerEntry;
 import com.swiftpay.ledger.domain.enums.EntryType;
+import com.swiftpay.ledger.domain.event.PaymentCompletedEvent;
+import com.swiftpay.ledger.domain.event.PaymentFailedEvent;
 import com.swiftpay.ledger.domain.event.PaymentInitiatedEvent;
 import com.swiftpay.ledger.exception.AccountNotFoundException;
 import com.swiftpay.ledger.exception.CurrencyMismatchException;
 import com.swiftpay.ledger.exception.DuplicateLedgerEntryException;
 import com.swiftpay.ledger.exception.InsufficientBalanceException;
 import com.swiftpay.ledger.exception.InvalidPaymentEventException;
+import com.swiftpay.ledger.messaging.producers.PaymentResultProducer;
 import com.swiftpay.ledger.repository.AccountRepository;
 import com.swiftpay.ledger.repository.LedgerEntryRepository;
 import com.swiftpay.ledger.service.LedgerService;
+import jakarta.persistence.OptimisticLockException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.Locale;
@@ -31,21 +39,77 @@ public class LedgerServiceImpl implements LedgerService {
 
     private static final int CURRENCY_LENGTH = 3;
     private static final int MAX_AMOUNT_SCALE = 4;
+    private static final int MAX_OPTIMISTIC_LOCK_RETRIES = 3;
+    private static final long OPTIMISTIC_LOCK_BACKOFF_MS = 100L;
+    private static final String PAYMENT_COMPLETED_TOPIC =
+            "swiftpay.payment.completed";
+    private static final String PAYMENT_FAILED_TOPIC =
+            "swiftpay.payment.failed";
 
     private final AccountRepository accountRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final PaymentResultProducer paymentResultProducer;
 
     public LedgerServiceImpl(
             AccountRepository accountRepository,
-            LedgerEntryRepository ledgerEntryRepository
+            LedgerEntryRepository ledgerEntryRepository,
+            KafkaTemplate<String, Object> kafkaTemplate,
+            PaymentResultProducer paymentResultProducer
     ) {
         this.accountRepository = accountRepository;
         this.ledgerEntryRepository = ledgerEntryRepository;
+        this.kafkaTemplate = kafkaTemplate;
+        this.paymentResultProducer = paymentResultProducer;
     }
 
     @Override
-    @Transactional
     public void processPayment(PaymentInitiatedEvent event) {
+        processPaymentWithRetry(event, MAX_OPTIMISTIC_LOCK_RETRIES);
+    }
+
+    private void processPaymentWithRetry(
+            PaymentInitiatedEvent event,
+            int remainingRetries
+    ) {
+        try {
+            processPaymentInTransaction(event);
+        } catch (ObjectOptimisticLockingFailureException | OptimisticLockException ex) {
+            if (remainingRetries <= 1) {
+                log.error(
+                        "Optimistic locking failure persisted for transactionId={} after {} attempts",
+                        event.transactionId(),
+                        MAX_OPTIMISTIC_LOCK_RETRIES,
+                        ex
+                );
+                throw ex;
+            }
+
+            long backoffMs = OPTIMISTIC_LOCK_BACKOFF_MS * (MAX_OPTIMISTIC_LOCK_RETRIES - remainingRetries + 1L);
+            log.warn(
+                    "Optimistic lock conflict while processing transactionId={}, retrying in {} ms, attemptsLeft={}",
+                    event.transactionId(),
+                    backoffMs,
+                    remainingRetries - 1
+            );
+
+            try {
+                Thread.sleep(backoffMs);
+            } catch (InterruptedException interruptedException) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "Interrupted while retrying optimistic lock conflict for transactionId="
+                                + event.transactionId(),
+                        interruptedException
+                );
+            }
+
+            processPaymentWithRetry(event, remainingRetries - 1);
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    protected void processPaymentInTransaction(PaymentInitiatedEvent event) {
 
         validateEvent(event);
 
@@ -64,46 +128,35 @@ public class LedgerServiceImpl implements LedgerService {
         Account sender = findAccount(event.senderId());
         Account receiver = findAccount(event.receiverId());
 
-        /*
-         * Idempotency check.
-         *
-         * Kafka provides at-least-once delivery, so the same event
-         * can be delivered more than once.
-         */
         if (isAlreadyProcessed(
                 transactionId,
                 sender.getId(),
                 receiver.getId()
         )) {
-
             log.info(
                     "Payment already processed. Ignoring duplicate event. eventId={}, transactionId={}",
                     event.eventId(),
                     transactionId
             );
-
             return;
         }
 
         validateCurrency(event, sender, receiver);
 
-        /*
-         * Modify managed JPA entities.
-         *
-         * Because this method is transactional, Hibernate will
-         * persist these balance changes when the transaction commits.
-         */
-        debitSender(
-                sender,
-                event.amount(),
-                transactionId
-        );
+        try {
+            debitSender(sender, event.amount(), transactionId);
+        } catch (InsufficientBalanceException ex) {
+            log.warn(
+                    "Insufficient balance. transactionId={}, senderAccountId={}, amount={}",
+                    transactionId,
+                    sender.getId(),
+                    event.amount()
+            );
+            publishFailedAfterCommit(event, ex.getMessage());
+            return;
+        }
 
-        creditReceiver(
-                receiver,
-                event.amount(),
-                transactionId
-        );
+        creditReceiver(receiver, event.amount(), transactionId);
 
         LedgerEntry debitEntry = createLedgerEntry(
                 transactionId,
@@ -124,8 +177,12 @@ public class LedgerServiceImpl implements LedgerService {
         saveLedgerEntries(
                 debitEntry,
                 creditEntry,
-                transactionId
+                transactionId,
+                sender.getId(),
+                receiver.getId()
         );
+
+        publishCompletedAfterCommit(event);
 
         log.info(
                 "Payment successfully posted to ledger. eventId={}, transactionId={}, senderAccountId={}, receiverAccountId={}",
@@ -275,7 +332,7 @@ public class LedgerServiceImpl implements LedgerService {
 
             sender.debit(amount);
 
-        } catch (IllegalStateException ex) {
+        } catch (InsufficientBalanceException ex) {
 
             log.warn(
                     "Insufficient balance. transactionId={}, senderAccountId={}, amount={}",
@@ -284,9 +341,7 @@ public class LedgerServiceImpl implements LedgerService {
                     amount
             );
 
-            throw new InsufficientBalanceException(
-                    "Insufficient balance for sender account"
-            );
+            throw ex;
         }
     }
 
@@ -351,17 +406,30 @@ public class LedgerServiceImpl implements LedgerService {
     private void saveLedgerEntries(
             LedgerEntry debitEntry,
             LedgerEntry creditEntry,
-            String transactionId
+            String transactionId,
+            Long senderAccountId,
+            Long receiverAccountId
     ) {
 
         try {
-
             ledgerEntryRepository.save(debitEntry);
             ledgerEntryRepository.save(creditEntry);
-
             ledgerEntryRepository.flush();
 
         } catch (DataIntegrityViolationException ex) {
+            if (isAlreadyProcessed(
+                    transactionId,
+                    senderAccountId,
+                    receiverAccountId
+            )) {
+                log.info(
+                        "Ledger entries already exist for duplicate transactionId={}, senderAccountId={}, receiverAccountId={}",
+                        transactionId,
+                        senderAccountId,
+                        receiverAccountId
+                );
+                return;
+            }
 
             log.error(
                     "Database constraint violation while creating ledger entries. transactionId={}",
@@ -475,6 +543,82 @@ public class LedgerServiceImpl implements LedgerService {
             );
         }
     }
+
+    private void publishCompletedAfterCommit(PaymentInitiatedEvent event) {
+        PaymentCompletedEvent completedEvent =
+                new PaymentCompletedEvent(
+                        event.eventId(),
+                        event.transactionId(),
+                        event.senderId(),
+                        event.receiverId(),
+                        event.amount(),
+                        event.currency()
+                );
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            paymentResultProducer.publishCompleted(completedEvent);
+                            log.info(
+                                    "Published PaymentCompleted event. transactionId={}",
+                                    event.transactionId()
+                            );
+                        }
+                    }
+            );
+            return;
+        }
+
+        paymentResultProducer.publishCompleted(completedEvent);
+        log.info(
+                "Published PaymentCompleted event. transactionId={}",
+                event.transactionId()
+        );
+    }
+
+    private void publishFailedAfterCommit(
+            PaymentInitiatedEvent event,
+            String reason
+    ) {
+        PaymentFailedEvent failedEvent =
+                new PaymentFailedEvent(
+                        event.eventId(),
+                        event.transactionId(),
+                        event.senderId(),
+                        event.receiverId(),
+                        event.amount(),
+                        event.currency(),
+                        reason
+                );
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            paymentResultProducer.publishFailed(failedEvent);
+                            log.info(
+                                    "Published PaymentFailed event. transactionId={}, reason={}",
+                                    event.transactionId(),
+                                    reason
+                            );
+                        }
+                    }
+            );
+            return;
+        }
+
+        paymentResultProducer.publishFailed(failedEvent);
+        log.info(
+                "Published PaymentFailed event. transactionId={}, reason={}",
+                event.transactionId(),
+                reason
+        );
+    }
+
+
 
     /**
      * Normalizes currency into ISO-style uppercase representation.

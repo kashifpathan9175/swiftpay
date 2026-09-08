@@ -41,6 +41,10 @@ public class OutboxEvent {
     @Column(name = "status", nullable = false, length = 20)
     private OutboxStatus status;
 
+    @Version
+    @Column(name = "event_version", nullable = false)
+    private Long version;
+
     @Column(name = "attempts", nullable = false)
     private int attempts;
 
@@ -216,6 +220,10 @@ public class OutboxEvent {
 
     public int getAttempts() {
         return attempts;
+    }
+
+    public Long getVersion() {
+        return version;
     }
 
     public Instant getAvailableAt() {

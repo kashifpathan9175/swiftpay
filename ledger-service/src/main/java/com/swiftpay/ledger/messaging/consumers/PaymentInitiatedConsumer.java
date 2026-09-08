@@ -3,6 +3,7 @@ package com.swiftpay.ledger.messaging.consumers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.swiftpay.ledger.domain.event.PaymentInitiatedEvent;
 import com.swiftpay.ledger.service.LedgerService;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -15,11 +16,14 @@ public class PaymentInitiatedConsumer {
             LoggerFactory.getLogger(PaymentInitiatedConsumer.class);
 
     private final LedgerService ledgerService;
+    private final ObjectMapper objectMapper;
 
     public PaymentInitiatedConsumer(
-            LedgerService ledgerService
+            LedgerService ledgerService,
+            ObjectMapper objectMapper
     ) {
         this.ledgerService = ledgerService;
+        this.objectMapper = objectMapper;
     }
 
     @KafkaListener(
@@ -27,24 +31,53 @@ public class PaymentInitiatedConsumer {
             groupId = "${spring.kafka.consumer.group-id}",
             containerFactory = "kafkaListenerContainerFactory"
     )
-    public void consume(PaymentInitiatedEvent event) {
+    public void consume(String payload) {
 
-        if (event == null) {
+        try {
+            String normalizedPayload = payload;
+
+            if (normalizedPayload != null
+                    && normalizedPayload.length() >= 2
+                    && normalizedPayload.startsWith("\"")
+                    && normalizedPayload.endsWith("\"")) {
+                normalizedPayload = objectMapper.readValue(
+                        normalizedPayload,
+                        String.class
+                );
+            }
+
+            PaymentInitiatedEvent event =
+                    objectMapper.readValue(
+                            normalizedPayload,
+                            PaymentInitiatedEvent.class
+                    );
+
+            if (event == null) {
+                throw new IllegalArgumentException(
+                        "PaymentInitiatedEvent must not be null"
+                );
+            }
+
+            log.info(
+                    "Received PaymentInitiated event eventId={}, transactionId={}",
+                    event.eventId(),
+                    event.transactionId()
+            );
+
+            ledgerService.processPayment(event);
+
+        } catch (Exception ex) {
+
             log.error(
-                    "Received null PaymentInitiatedEvent"
+                    "Failed to process PaymentInitiated event payload={}",
+                    payload,
+                    ex
             );
 
             throw new IllegalArgumentException(
-                    "PaymentInitiatedEvent must not be null"
+                    "Invalid PaymentInitiatedEvent payload",
+                    ex
             );
         }
-
-        log.debug(
-                "Received PaymentInitiated event eventId={}, transactionId={}",
-                event.eventId(),
-                event.transactionId()
-        );
-
-        ledgerService.processPayment(event);
     }
 }
