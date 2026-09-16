@@ -18,23 +18,32 @@ spec:
       containers:
         - name: zookeeper
           image: confluentinc/cp-zookeeper:7.6.1
+
           env:
             - name: ZOOKEEPER_CLIENT_PORT
               value: "2181"
             - name: ZOOKEEPER_TICK_TIME
               value: "2000"
+
           ports:
             - containerPort: 2181
+
           readinessProbe:
             tcpSocket:
               port: 2181
-            initialDelaySeconds: 10
+            initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+
           livenessProbe:
             tcpSocket:
               port: 2181
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 5
+
           resources:
             requests:
               cpu: 100m

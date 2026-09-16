@@ -72,6 +72,17 @@ spec:
                 configMapKeyRef:
                   name: swiftpay-app-config
                   key: LEDGER_SERVICE_URL
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: swiftpay-app-config
+                  key: REDIS_HOST
+
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: swiftpay-app-config
+                  key: REDIS_PORT
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
